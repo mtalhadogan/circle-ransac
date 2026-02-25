@@ -33,6 +33,7 @@ env/
 *.swo
 
 # Project-specific
+pyransac/
 input/
 output/
 *.bmp
