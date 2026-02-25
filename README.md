@@ -114,8 +114,7 @@ CircleRansac/
 ├── circle_ransac/       # Main package
 │   ├── __init__.py
 │   ├── config.py        # Default parameters (Canny, RANSAC, scale)
-│   ├── features.py      # Circle model + least-squares fit
-│   ├── ransac.py        # RANSAC loop (sample, fit, score)
+│   ├── ransac.py        # RANSAC loop + Circle model (least-squares fit)
 │   └── pipeline.py      # Load image → Canny → RANSAC → draw/save
 ├── main.py              # CLI entry point
 ├── docs/

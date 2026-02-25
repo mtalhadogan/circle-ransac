@@ -6,8 +6,7 @@ from collections import namedtuple
 import cv2
 import numpy as np
 
-from circle_ransac.ransac import RansacFeature
-from circle_ransac.features import Circle
+from circle_ransac.ransac import RansacFeature, Circle
 from circle_ransac import config as cfg
 
 PipelineResult = namedtuple(

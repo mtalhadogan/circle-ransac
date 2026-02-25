@@ -1,5 +1,60 @@
 from __future__ import division
+import abc
 import numpy as np
+import scipy.linalg as la
+import scipy.spatial.distance as sd
+
+
+class Feature(object):
+    __metaclass__ = abc.ABCMeta
+
+    @abc.abstractproperty
+    def min_points(self):
+        pass
+
+    @abc.abstractmethod
+    def points_distance(self, points):
+        pass
+
+    @abc.abstractmethod
+    def print_feature(self, num_points):
+        pass
+
+
+class Circle(Feature):
+    min_points = 3
+
+    def __init__(self, points):
+        r, cx, cy = self._algebraic_solve(points)
+        self.radius = r
+        self.xc = cx
+        self.yc = cy
+
+    def _algebraic_solve(self, pts):
+        n = len(pts)
+        one_col = np.ones((n, 1))
+        xy = np.asarray(pts)
+        lhs = np.hstack([xy, one_col])
+        rhs_vec = -np.sum(xy * xy, axis=1)
+        coef, _, _, _ = la.lstsq(lhs, rhs_vec, cond=None)
+        a, b, c = coef
+        center_x = -a / 2.0
+        center_y = -b / 2.0
+        rad_squared = center_x * center_x + center_y * center_y - c
+        if rad_squared <= 0:
+            raise RuntimeError("Circle fit produced non-positive radius squared.")
+        return np.sqrt(rad_squared), center_x, center_y
+
+    def points_distance(self, points):
+        C = np.array([self.xc, self.yc])
+        to_center = sd.cdist(points, C.reshape(1, -2), metric="euclidean").flatten()
+        return np.abs(to_center - self.radius)
+
+    def print_feature(self, num_points):
+        t = np.linspace(0, 2 * np.pi, num_points, endpoint=False)
+        out_x = self.xc + self.radius * np.cos(t)
+        out_y = self.yc + self.radius * np.sin(t)
+        return np.vstack((out_x, out_y))
 
 
 class RansacFeature(object):
@@ -11,63 +66,57 @@ class RansacFeature(object):
         self.inlier_threshold = inlier_threshold
         self.seed = seed
 
-    def _fit_from_points(self, points):
-        n_total = points.shape[0]
-        sample_size = self.model_class.min_points
-        rng = np.random.default_rng(self.seed)
+    def _random_sample_indices(self, n_population, n_draw, gen):
+        if n_draw <= n_population:
+            return gen.choice(n_population, size=n_draw, replace=False)
+        return gen.integers(0, n_population, size=n_draw)
 
-        best_model = None
-        best_ratio = 0.0
+    def _fraction_agreeing(self, model, pts):
+        d = model.points_distance(pts)
+        return np.sum(d <= self.inlier_threshold) / pts.shape[0]
+
+    def _consensus_set(self, model, pts):
+        d = model.points_distance(pts)
+        return pts[d.ravel() <= self.inlier_threshold]
+
+    def _run_consensus_loop(self, pts):
+        gen = np.random.default_rng(self.seed)
+        N = pts.shape[0]
+        k = self.model_class.min_points
+        winning = None
+        winning_frac = 0.0
 
         for _ in range(self.max_it):
-            if sample_size <= n_total:
-                indices = rng.choice(n_total, size=sample_size, replace=False)
-            else:
-                indices = rng.integers(0, n_total, size=sample_size)
-            sample = points[indices]
-
+            sel = self._random_sample_indices(N, k, gen)
+            batch = pts[sel]
             try:
-                candidate = self.model_class(sample)
+                trial = self.model_class(batch)
             except RuntimeError:
                 continue
-
-            dist = candidate.points_distance(points)
-            mask = dist.ravel() <= self.inlier_threshold
-            ratio = mask.sum() / n_total
-
-            if ratio > best_ratio:
-                best_ratio = ratio
-                best_model = candidate
-
-            if best_ratio > self.inliers_percent:
+            frac = self._fraction_agreeing(trial, pts)
+            if frac > winning_frac:
+                winning_frac = frac
+                winning = trial
+            if winning_frac >= self.inliers_percent:
                 break
 
-        if best_model is not None and best_ratio > 0:
-            best_model = self._refit_on_inliers(best_model, points)
-
-        return best_model, best_ratio
-
-    def _refit_on_inliers(self, model, points):
-        dist = model.points_distance(points)
-        mask = dist.ravel() <= self.inlier_threshold
-        inliers = points[mask]
-        if inliers.shape[0] < self.model_class.min_points:
-            return model
-        try:
-            return self.model_class(inliers)
-        except RuntimeError:
-            return model
+        if winning is not None and winning_frac > 0:
+            agreeing = self._consensus_set(winning, pts)
+            if agreeing.shape[0] >= k:
+                try:
+                    winning = self.model_class(agreeing)
+                except RuntimeError:
+                    pass
+        return winning, winning_frac
 
     def detect_feature(self, points):
-        """points: (n, 2) each row (row, col). Returns (model, inlier_fraction)."""
-        return self._fit_from_points(points)
+        return self._run_consensus_loop(points)
 
     def image_search(self, image):
-        """Uses non-zero pixels as points. Returns (model, inlier_fraction)."""
-        rows, cols = np.where(image > 0)
-        if rows.size == 0:
+        nonzero = np.argwhere(image > 0)
+        if nonzero.size == 0:
             raise ValueError(
                 "Image has no non-zero pixels. Check threshold or use an edge image."
             )
-        points = np.column_stack((rows, cols))
-        return self._fit_from_points(points)
+        pts = nonzero[:, :2]
+        return self._run_consensus_loop(pts)
